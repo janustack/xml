@@ -1,0 +1,2 @@
+extends:
+  - https://raw.githubusercontent.com/janustack/janfig/main/.moon/tasks/typescript-library.yml

@@ -1,0 +1,7 @@
+{
+	"name": "@janustack/xml",
+	"exports": {
+		".": "./src/main.ts"
+	},
+	"version": "0.1.0"
+}

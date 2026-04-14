@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?app processing instruction?>
+
+<!DOCTYPE root [
+  <!ELEMENT root ANY>
+]>
+
+<root xmlns="urn:default"
+      xmlns:x="urn:x"
+      xmlns:y="urn:y">
+
+  <!-- Comment before content -->
+
+  <child id="1" x:type="example">
+    Text before CDATA
+
+    <![CDATA[
+      <not>parsed</not>
+      & still raw
+    ]]>
+
+    Text after CDATA
+  </child>
+
+  <x:item x:id="123" y:flag="true" plainAttr="value" />
+
+  <y:container>
+    <nested xmlns="urn:override">
+      <inner attr="no-namespace" x:attr="namespaced" />
+    </nested>
+  </y:container>
+
+  <rebind xmlns:x="urn:x2">
+    <x:item>Different namespace now</x:item>
+  </rebind>
+
+  <empty/>
+
+</root>

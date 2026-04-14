@@ -1,0 +1,3 @@
+extends:
+  - https://raw.githubusercontent.com/janustack/janfig/main/.moon/toolchain/bun.yml
+  - https://raw.githubusercontent.com/janustack/janfig/main/.moon/toolchain/typescript.yml
