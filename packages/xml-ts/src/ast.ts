@@ -1,4 +1,4 @@
-import type { AttributeValueSyntax, Mode } from "./enums.js";
+import type { AttributeValueSyntax } from "./enums.js";
 
 export interface ProcessingInstruction {
 	/**
@@ -32,7 +32,7 @@ export interface NamespaceBinding {
 export interface QualifiedName {
 	prefix?: string;
 	localName: string;
-	namespaceUri?: string;
+	uri?: string;
 }
 
 export interface Attribute {
@@ -44,7 +44,7 @@ export interface Attribute {
 export interface Tag {
 	name: QualifiedName;
 	attributes: Record<string, Attribute>;
-	isSelfClosing: boolean;
+	selfClosing: boolean;
 }
 
 export interface TextNode {
@@ -58,28 +58,4 @@ export interface TextNode {
 	value: string;
 	startPosition: number; // Character index in the source where the text node starts
 	endPosition: number; // Character index in the source where the text node ends
-}
-
-export interface SAXHandlers {
-	onAttribute?(attribute: Attribute): void;
-	onCdata?(cdata: string): void;
-	onCloseTag?(name: string): void;
-	onComment?(comment: string): void;
-	onDoctype?(doctype: string): void;
-	onError?(error: Error): void;
-	onMarkupDeclaration?(declaration: string): void;
-	onOpenTag?(tag: Tag): void;
-	onOpenTagStart?(tag: Tag): void;
-	onProcessingInstruction?(pi: ProcessingInstruction): void;
-	onScript?(script: string): void;
-	onText?(text: string): void;
-}
-
-export type SAXHandlerName = keyof SAXHandlers;
-
-export interface SAXOptions {
-	caseTransform?: "preserve" | "lowercase" | "uppercase";
-	mode?: Mode;
-	namespaces?: boolean;
-	trackPosition?: boolean;
 }

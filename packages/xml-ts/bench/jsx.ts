@@ -1,10 +1,9 @@
-import { type SAXOptions, SAXParser } from "@janustack/sax";
+import { type SAXOptions, SAXParser } from "@janustack/xml";
 import { bench, group, run } from "mitata";
 
 const janustackOptions: SAXOptions = {
 	mode: "jsx",
-	namespaces: false,
-	trackPosition: false,
+	namespaces: true,
 } as const;
 
 const path = "../assets/index.jsx";

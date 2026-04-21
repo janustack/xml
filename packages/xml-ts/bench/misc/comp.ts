@@ -1,23 +1,23 @@
-import { type SAXOptions, SAXParser } from "@janustack/sax";
+import {
+	SAXParser as JanustackSAXParser,
+	type SAXOptions,
+} from "@janustack/xml";
 import { bench, group, run } from "mitata";
 import IsaacsSAX from "sax";
+import { SAXParser as ModifiedSAXParser } from "../../tests/modded-sax/dist/main.js";
 
 const janustackOptions: SAXOptions = {
+	mode: "xml",
 	namespaces: true,
-	trackPosition: false,
 } as const;
 
 const isaacsOptions = {
-	normalize: false,
-	position: false,
-	strict: false,
-	trim: false,
 	xmlns: true,
 } as const;
 
 const decoder = new TextDecoder();
 
-const path = "../assets/svg/index.svg";
+const path = "../../assets/xml/3mb.xml";
 const url = new URL(path, import.meta.url);
 const stream = Bun.file(url).stream();
 
@@ -29,15 +29,23 @@ for await (const chunk of stream) {
 
 group("XML Parser Comparison (chunked strings)", () => {
 	bench("Janustack SAX", () => {
-		const parser = new SAXParser(janustackOptions);
+		const parser = new JanustackSAXParser(janustackOptions);
 		for (const chunk of chunks) {
 			parser.write(chunk);
 		}
 		parser.end();
 	});
 
+	bench("Modified Isaacs SAX", () => {
+		const parser = new ModifiedSAXParser(true, isaacsOptions);
+		for (const chunk of chunks) {
+			parser.write(chunk);
+		}
+		parser.close();
+	});
+
 	bench("Isaacs SAX", () => {
-		const parser = IsaacsSAX.parser(isaacsOptions.strict, isaacsOptions);
+		const parser = IsaacsSAX.parser(true, isaacsOptions);
 		for (const chunk of chunks) {
 			parser.write(chunk);
 		}
@@ -45,4 +53,4 @@ group("XML Parser Comparison (chunked strings)", () => {
 	});
 });
 
-run();
+await run();

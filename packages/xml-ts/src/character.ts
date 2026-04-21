@@ -1,6 +1,6 @@
 import { Ascii } from "./ascii.js";
 
-export function isChar(codePoint: number): boolean {
+export function isCharacter(codePoint: number): boolean {
 	return (
 		codePoint === Ascii.HorizontalTab ||
 		codePoint === Ascii.LineFeed ||
@@ -26,7 +26,7 @@ export function isName(str: string): boolean {
 	// The first character must strictly be a NameStartChar
 	const firstCodePoint = chars[0].codePointAt(0);
 
-	if (firstCodePoint === undefined || !isNameStartChar(firstCodePoint)) {
+	if (firstCodePoint === undefined || !isNameStartCharacter(firstCodePoint)) {
 		return false;
 	}
 
@@ -34,7 +34,7 @@ export function isName(str: string): boolean {
 	for (let i = 1; i < chars.length; i++) {
 		const codePoint = chars[i].codePointAt(0);
 
-		if (codePoint === undefined || !isNameChar(codePoint)) {
+		if (codePoint === undefined || !isNameCharacter(codePoint)) {
 			return false;
 		}
 	}
@@ -63,9 +63,9 @@ export function isNames(str: string): boolean {
 	return true;
 }
 
-export function isNameChar(codePoint: number): boolean {
+export function isNameCharacter(codePoint: number): boolean {
 	return (
-		isNameStartChar(codePoint) ||
+		isNameStartCharacter(codePoint) ||
 		(codePoint >= Ascii.Zero && codePoint <= Ascii.Nine) || // 0-9
 		codePoint === Ascii.Minus || // -
 		codePoint === Ascii.Period || // .
@@ -75,7 +75,7 @@ export function isNameChar(codePoint: number): boolean {
 	);
 }
 
-export function isNameStartChar(codePoint: number): boolean {
+export function isNameStartCharacter(codePoint: number): boolean {
 	return (
 		(codePoint >= Ascii.UppercaseA && codePoint <= Ascii.UppercaseZ) || // A-Z
 		(codePoint >= Ascii.LowercaseA && codePoint <= Ascii.LowercaseZ) || // a-z
@@ -98,11 +98,11 @@ export function isNameStartChar(codePoint: number): boolean {
 
 export type Quote = typeof Ascii.DoubleQuote | typeof Ascii.SingleQuote;
 
-export function isQuote(codePoint: number): codePoint is Quote {
-	return codePoint === Ascii.DoubleQuote || codePoint === Ascii.SingleQuote;
+export function isQuote(byte: number): byte is Quote {
+	return byte === Ascii.DoubleQuote || byte === Ascii.SingleQuote;
 }
 
-export function isRestrictedChar(codePoint: number): boolean {
+export function isRestrictedCharacter(codePoint: number): boolean {
 	return (
 		(codePoint >= Ascii.StartOfHeader && codePoint <= Ascii.Backspace) ||
 		(codePoint >= Ascii.VerticalTab && codePoint <= Ascii.FormFeed) ||
@@ -112,11 +112,11 @@ export function isRestrictedChar(codePoint: number): boolean {
 	);
 }
 
-export function isWhitespace(codePoint: number): boolean {
+export function isWhitespace(byte: number): boolean {
 	return (
-		codePoint === Ascii.CarriageReturn ||
-		codePoint === Ascii.HorizontalTab ||
-		codePoint === Ascii.LineFeed ||
-		codePoint === Ascii.Space
+		byte === Ascii.CarriageReturn ||
+		byte === Ascii.HorizontalTab ||
+		byte === Ascii.LineFeed ||
+		byte === Ascii.Space
 	);
 }

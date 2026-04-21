@@ -8,7 +8,7 @@ const result = await Bun.build({
 	plugins: [dts()],
 	target: "browser",
 	footer: "// Built with red eyes by ACY in Florida",
-	minify: false,
+	minify: true,
 	outdir: "dist",
 });
 

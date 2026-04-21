@@ -1,33 +1,106 @@
-import { Ascii } from "./ascii.";
-import {
-	isNameChar,
-	isNameStartChar,
-	isQuote,
-	isWhitespace,
-} from "./character.js";
-import {
-	BUFFERS,
-	MAX_BUFFER_LENGTH,
-	NAMESPACES,
-	XML_PREDEFINED_ENTITIES,
-} from "./constants.js";
-import { AttributeValueSyntax, Mode, ParseError, State } from "./enums.js";
+import { Ascii } from "./ascii";
 import type {
 	Attribute,
 	NamespaceBinding,
 	ProcessingInstruction,
-	SAXHandlers,
-	SAXOptions,
 	Tag,
-} from "./types.js";
-import { isAttributeEnd, parseQualifiedName } from "./utils.js";
+	TextNode,
+} from "./ast";
+import {
+	isNameCharacter,
+	isNameStartCharacter,
+	isQuote,
+	isWhitespace,
+} from "./character.js";
+import {
+	XML_PREDEFINED_ENTITIES,
+	XML_PREDEFINED_NAMESPACES,
+} from "./constants.js";
+import { AttributeValueSyntax } from "./enums.ts";
+import { isAttributeValueEnd, parseQualifiedName } from "./utilities.js";
 
-export class Parser {
-	public static decoder = new TextDecoder();
+export interface SAXHandlers {
+	onAttribute?(attribute: Attribute): void;
+	onCdata?(cdata: string): void;
+	onCloseTag?(name: string): void;
+	onComment?(comment: { value: string }): void;
+	onDoctype?(doctype: string): void;
+	onError?(error: Error): void;
+	onMarkupDeclaration?(declaration: string): void;
+	onOpenTag?(tag: Tag): void;
+	onOpenTagStart?(tag: Tag): void;
+	onProcessingInstruction?(pi: ProcessingInstruction): void;
+	onScript?(script: string): void;
+	onText?(text: TextNode): void;
+}
+
+export interface SAXOptions {
+	caseTransform?: "preserve" | "lowercase" | "uppercase";
+	mode?: "html" | "jsx" | "xml";
+	namespaces?: boolean;
+	trackPosition?: boolean;
+}
+
+const MAX_BUFFER_LENGTH = 64 * 1024;
+
+const PARSE_ERROR = {
+	BooleanAttributeInXml: "XML does not allow boolean attributes",
+} as const;
+
+enum State {
+	Attribute,
+	AttributeName,
+	AttributeNameSawWhitespace,
+	AttributeValue,
+	AttributeValueClosed,
+	AttributeValueEntityQuoted,
+	AttributeValueEntityUnquoted,
+	AttributeValueQuoted,
+	AttributeValueUnquoted,
+
+	Begin,
+	BeginWhitespace,
+
+	CData,
+	CDataEnding,
+	CDataEnding2,
+
+	CloseTag,
+	CloseTagSawWhitespace,
+
+	Comment,
+
+	Doctype,
+	DoctypeDtd,
+	DoctypeDtdQuoted,
+	DoctypeQuoted,
+
+	JsxAttributeExpression,
+	JsxExpressionChild,
+
+	OpenTag,
+	OpenTagSlash,
+	OpenWaka,
+
+	MarkupDeclaration,
+	MarkupDeclarationQuoted,
+
+	ProcessingInstruction,
+	ProcessingInstructionData,
+	ProcessingInstructionEnding,
+
+	Script,
+
+	Text,
+	TextEntity,
+}
+
+export class SAXParser {
+	public decoder = new TextDecoder();
 
 	public static defaultOptions: SAXOptions = {
 		caseTransform: "preserve",
-		mode: Mode.Xml,
+		mode: "xml",
 		namespaces: false,
 		trackPosition: false,
 	};
@@ -38,7 +111,9 @@ export class Parser {
 
 	// List implemented as an array of Attribute objects
 	private attributeList: Attribute[] = [];
-	private namespaceStack: NamespaceBinding[] = [Object.create(NAMESPACES)];
+	private namespaceStack: NamespaceBinding[] = [
+		Object.create(XML_PREDEFINED_NAMESPACES),
+	];
 	// Stack implemented as an array of Tag objects
 	private tagStack: Tag[] = [];
 
@@ -50,7 +125,7 @@ export class Parser {
 
 	private bufferCheckPosition = MAX_BUFFER_LENGTH;
 	private applyCaseTransform: (name: string) => string = (name) => name;
-	public entities = XML_PREDEFINED_ENTITIES;
+	public entities: Record<string, string> = XML_PREDEFINED_ENTITIES;
 
 	// Parser state
 	private state = State.Begin;
@@ -65,12 +140,12 @@ export class Parser {
 		value: "",
 		valueType: AttributeValueSyntax.Boolean,
 	};
-	private cdata = "";
-	private char = "";
-	private comment = "";
-	private doctype = "";
-	private entity = "";
-	private markupDeclaration = "";
+	private cdata: number[] = [];
+	private char: number[] = [];
+	private comment: number[] = [];
+	private doctype: number[] = [];
+	private entity: number[] = [];
+	private markupDeclaration: number[] = [];
 	private pi: ProcessingInstruction = {
 		target: "",
 		data: "",
@@ -80,12 +155,14 @@ export class Parser {
 	private tag: Tag = {
 		name: "",
 		attributes: {},
-		isSelfClosing: false,
+		selfClosing: false,
 	};
-	private textNode = "";
+	private textNode: TextNode = {
+		value: "",
+	};
 
 	constructor(options: SAXOptions = {}, handlers: SAXHandlers = {}) {
-		this.options = { ...Parser.defaultOptions, ...options };
+		this.options = { ...SAXParser.defaultOptions, ...options };
 
 		if (this.options.caseTransform === "lowercase") {
 			this.applyCaseTransform = (string) => string.toLowerCase();
@@ -94,7 +171,7 @@ export class Parser {
 		}
 
 		if (this.options.namespaces) {
-			this.namespaceStack = [Object.create(NAMESPACES)];
+			this.namespaceStack = [Object.create(XML_PREDEFINED_NAMESPACES)];
 		}
 
 		this.handlers = handlers;
@@ -129,18 +206,18 @@ export class Parser {
 	public flush(): void {
 		this.flushText();
 
-		if (this.cdata !== "") {
+		if (this.cdata.length > 0) {
 			this.emitNode("onCdata", this.cdata);
-			this.cdata = "";
+			this.cdata.length = 0;
 		}
 
-		if (this.script !== "") {
+		if (this.script.length > 0) {
 			this.emitNode("onScript", this.script);
-			this.script = "";
+			this.script.length = 0;
 		}
 	}
 
-	public write(chunk: Uint8Array | string): void {
+	public write(chunk: Uint8Array): void {
 		if (this.error) {
 			throw this.error;
 		}
@@ -150,21 +227,14 @@ export class Parser {
 			return;
 		}
 
-		if (chunk instanceof Uint8Array) {
-			chunk = Parser.decoder.decode(chunk, { stream: true });
-		}
-
 		let i = 0;
-		let char = "";
 
 		while (i < chunk.length) {
-			let charCode = chunk.charCodeAt(i);
-			const codePoint = chunk.codePointAt(i)!;
-			char = chunk[i++];
+			let byte = chunk[i++];
 
-			this.char = char;
-
-			this.updatePosition(charCode);
+			if (this.options.trackPosition) {
+				this.updatePosition(byte);
+			}
 
 			switch (this.state) {
 				/**
@@ -174,11 +244,11 @@ export class Parser {
 				case State.Begin: {
 					this.state = State.BeginWhitespace;
 
-					if (charCode === 0xfeff) {
+					if (byte === 0xef || byte === 0xbb || byte === 0xbf) {
 						continue;
 					}
 
-					this.beginWhitespace(charCode);
+					this.beginWhitespace(byte);
 					continue;
 				}
 
@@ -187,15 +257,18 @@ export class Parser {
 						const startIndex = i - 1;
 
 						while (
-							char &&
-							charCode !== Ascii.OpenAngle &&
-							charCode !== Ascii.Ampersand
+							byte &&
+							byte !== Ascii.OpenAngle &&
+							byte !== Ascii.Ampersand
 						) {
-							char = chunk[i++];
+							byte = chunk[i++];
 
-							if (char) {
+							if (byte) {
 								charCode = chunk.charCodeAt(i - 1);
-								this.updatePosition(charCode);
+
+								if (this.options.trackPosition) {
+									this.updatePosition(charCode);
+								}
 							}
 						}
 
@@ -203,11 +276,11 @@ export class Parser {
 					}
 
 					if (
-						charCode === Ascii.OpenAngle &&
+						byte === Ascii.OpenAngle &&
 						!(
 							this.sawRoot &&
 							this.tagStack.length === 0 &&
-							this.options.mode !== Mode.Xml
+							this.options.mode !== "xml"
 						)
 					) {
 						this.state = State.OpenWaka;
@@ -216,18 +289,18 @@ export class Parser {
 					}
 
 					if (
-						!isWhitespace(charCode) &&
+						!isWhitespace(byte) &&
 						(!this.sawRoot || this.tagStack.length === 0)
 					) {
 						this.fail("Text data outside of root node.");
 					}
 
-					if (charCode === Ascii.Ampersand) {
+					if (byte === Ascii.Ampersand) {
 						this.state = State.TextEntity;
 						continue;
 					}
 
-					this.textNode += char;
+					this.textNode.value.push(byte);
 					continue;
 				}
 
@@ -243,7 +316,7 @@ export class Parser {
 					 *   ' ' → whitespace → ignored
 					 *   'i' → start parsing next attribute (`id`)
 					 */
-					if (isWhitespace(charCode)) {
+					if (isWhitespace(byte)) {
 						continue;
 					}
 
@@ -263,7 +336,7 @@ export class Parser {
 					 *   'd','i','v' → read tag name
 					 *   '>' → tag complete → `openTag()` called
 					 */
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.processOpenTag();
 						continue;
 					}
@@ -283,13 +356,13 @@ export class Parser {
 					 *   'd','i','v' → read tag name
 					 *   '>' → tag closes
 					 */
-					if (charCode === Ascii.ForwardSlash) {
+					if (byte === Ascii.ForwardSlash) {
 						this.state = State.OpenTagSlash;
 						continue;
 					}
 
 					// Begin parsing a new attribute name
-					if (isNameStartChar(codePoint)) {
+					if (isNameStartCharacter(codePoint)) {
 						this.newAttribute(char);
 						continue; // Jumps to the next character
 					}
@@ -299,19 +372,19 @@ export class Parser {
 				}
 
 				case State.AttributeName: {
-					if (isWhitespace(charCode)) {
+					if (isWhitespace(byte)) {
 						this.state = State.AttributeNameSawWhitespace;
 						continue;
 					}
 
-					if (charCode === Ascii.Equal) {
+					if (byte === Ascii.Equal) {
 						this.state = State.AttributeValue;
 						continue;
 					}
 
-					if (charCode === Ascii.CloseAngle) {
-						if (this.options.mode === Mode.Xml) {
-							this.fail(ParseError.BooleanAttributeInXml);
+					if (byte === Ascii.CloseAngle) {
+						if (this.options.mode === "xml") {
+							this.fail(PARSE_ERROR.BooleanAttributeInXml);
 						}
 
 						this.attribute.value = this.attribute.name;
@@ -320,8 +393,8 @@ export class Parser {
 						continue;
 					}
 
-					if (isNameChar(codePoint)) {
-						this.attribute.name += char; // Append the character
+					if (isNameCharacter(codePoint)) {
+						this.attribute.name.push(byte); // Append the character
 						continue; // Jumps to the next character in the while loop
 					}
 
@@ -338,34 +411,34 @@ export class Parser {
 				 * ```
 				 */
 				case State.AttributeNameSawWhitespace: {
-					if (isWhitespace(charCode)) {
+					if (isWhitespace(byte)) {
 						continue;
 					}
 
-					if (charCode === Ascii.Equal) {
+					if (byte === Ascii.Equal) {
 						this.state = State.AttributeValue;
 						continue;
 					}
 
-					if (charCode === Ascii.ForwardSlash) {
-						if (this.options.mode === Mode.Xml) {
-							this.fail(ParseError.BooleanAttributeInXml);
+					if (byte === Ascii.ForwardSlash) {
+						if (this.options.mode === "xml") {
+							this.fail(PARSE_ERROR.BooleanAttributeInXml);
 						}
 
 						this.state = State.OpenTagSlash;
 						continue;
 					}
 
-					if (charCode === Ascii.CloseAngle) {
-						if (this.options.mode === Mode.Xml) {
-							this.fail(ParseError.BooleanAttributeInXml);
+					if (byte === Ascii.CloseAngle) {
+						if (this.options.mode === "xml") {
+							this.fail(PARSE_ERROR.BooleanAttributeInXml);
 						}
 
 						this.processOpenTag();
 						continue;
 					}
 
-					if (isNameStartChar(codePoint)) {
+					if (isNameStartCharacter(codePoint)) {
 						this.newAttribute(char);
 						continue;
 					}
@@ -378,7 +451,7 @@ export class Parser {
 						value: "",
 						valueType: AttributeValueSyntax.Boolean,
 					});
-					this.attribute.name = "";
+					this.attribute.name.length = 0;
 
 					this.fail("Invalid attribute name");
 					this.state = State.Attribute;
@@ -387,54 +460,92 @@ export class Parser {
 
 				case State.AttributeValue: {
 					// Skip whitespace between '=' and the start of the value.
-					if (isWhitespace(charCode)) {
+					if (isWhitespace(byte)) {
 						continue;
 					}
 
-					if (isQuote(charCode)) {
-						this.quote = charCode;
+					if (isQuote(byte)) {
+						this.quote = byte;
 						this.state = State.AttributeValueQuoted;
 
-						if (charCode === Ascii.DoubleQuote) {
+						if (byte === Ascii.DoubleQuote) {
 							this.attribute.valueType = AttributeValueSyntax.DoubleQuoted;
 						}
 
-						if (charCode === Ascii.SingleQuote) {
+						if (byte === Ascii.SingleQuote) {
 							this.attribute.valueType = AttributeValueSyntax.SingleQuoted;
 						}
 
 						continue;
 					}
 
-					if (charCode === Ascii.OpenBrace) {
-						if (this.options.mode !== Mode.Jsx) {
+					if (byte === Ascii.OpenBrace) {
+						if (this.options.mode !== "jsx") {
 							this.fail("JSX expressions are only allowed in JSX mode");
 							continue;
 						}
 
 						this.state = State.JsxAttributeExpression;
 						this.braceDepth += 1;
-						this.attribute.value += char;
+						this.attribute.value.push(byte);
 						this.attribute.valueType = AttributeValueSyntax.JsxExpression;
 						continue;
 					}
 
-					// ONLY HTML:
-					// Unquoted attribute values are valid in HTML (e.g. `value=foo`) but not in JSX or XML
+					if (this.options.mode !== "html") {
+						this.fail(
+							"Unquoted attribute values are only allowed in HTML mode",
+						);
+						continue;
+					}
+
 					this.state = State.AttributeValueUnquoted;
-					this.attribute.value = char;
+					this.attribute.value.push(byte);
 					this.attribute.valueType = AttributeValueSyntax.Unquoted;
 					continue;
 				}
 
+				// Entered after closing an attribute value (after the quote)
+				case State.AttributeValueClosed: {
+					// Whitespace means we can begin parsing the next attribute
+					if (isWhitespace(byte)) {
+						this.state = State.Attribute;
+						continue;
+					}
+
+					if (byte === Ascii.CloseAngle) {
+						this.processOpenTag();
+						continue;
+					}
+
+					// Indicates a self closing tag
+					if (byte === Ascii.ForwardSlash) {
+						this.state = State.OpenTagSlash;
+						continue;
+					}
+
+					// If another attribute starts immediately, whitespace is missing.
+					// Emit an error, but recover by treating this as a new attribute.
+					if (isNameStartCharacter(codePoint)) {
+						this.fail(
+							"Invalid attribute syntax: missing whitespace between attributes",
+						);
+						this.newAttribute(char);
+						continue;
+					}
+
+					this.fail("Invalid attribute name"); // Any other character here is invalid
+					continue;
+				}
+
 				case State.AttributeValueQuoted: {
-					if (charCode !== this.quote) {
-						if (charCode === Ascii.Ampersand) {
+					if (byte !== this.quote) {
+						if (byte === Ascii.Ampersand) {
 							this.state = State.AttributeValueEntityQuoted;
 							continue;
 						}
 
-						this.attribute.value += char;
+						this.attribute.value.push(byte);
 						continue;
 					}
 
@@ -448,58 +559,25 @@ export class Parser {
 					continue;
 				}
 
-				// Entered after closing an attribute value (after the quote)
-				case State.AttributeValueClosed: {
-					// Whitespace means we can begin parsing the next attribute
-					if (isWhitespace(charCode)) {
-						this.state = State.Attribute;
-						continue;
-					}
-
-					if (charCode === Ascii.CloseAngle) {
-						this.processOpenTag();
-						continue;
-					}
-
-					// Indicates a self closing tag
-					if (charCode === Ascii.ForwardSlash) {
-						this.state = State.OpenTagSlash;
-						continue;
-					}
-
-					// If another attribute starts immediately, whitespace is missing.
-					// Emit an error, but recover by treating this as a new attribute.
-					if (isNameStartChar(codePoint)) {
-						this.fail(
-							"Invalid attribute syntax: missing whitespace between attributes",
-						);
-						this.newAttribute(char);
-						continue;
-					}
-
-					this.fail("Invalid attribute name"); // Any other character here is invalid
-					continue;
-				}
-
 				case State.AttributeValueUnquoted: {
-					if (!isAttributeEnd(charCode)) {
-						if (charCode === Ascii.Ampersand) {
+					if (!isAttributeValueEnd(byte)) {
+						if (byte === Ascii.Ampersand) {
 							this.state = State.AttributeValueEntityUnquoted;
 							continue;
 						}
 
-						this.attribute.value += char;
+						this.attribute.value.push(byte);
 						continue;
 					}
 
 					this.processAttribute();
 
-					if (charCode === Ascii.ForwardSlash) {
+					if (byte === Ascii.ForwardSlash) {
 						this.state = State.OpenTagSlash;
 						continue;
 					}
 
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.processOpenTag();
 						continue;
 					}
@@ -515,25 +593,28 @@ export class Parser {
 				 * empty space until it finds the opening root tag (or an error).
 				 */
 				case State.BeginWhitespace: {
-					this.beginWhitespace(charCode);
+					this.beginWhitespace(byte);
 					continue;
 				}
 
 				case State.CData: {
 					const startIndex = i - 1;
 
-					while (char && charCode !== Ascii.CloseBracket) {
-						char = chunk[i++];
+					while (byte && byte !== Ascii.CloseBracket) {
+						byte = chunk[i++];
 
-						if (char) {
+						if (byte) {
 							charCode = chunk.charCodeAt(i - 1);
-							this.updatePosition(charCode);
+
+							if (this.options.trackPosition) {
+								this.updatePosition(byte);
+							}
 						}
 					}
 
 					this.cdata += chunk.substring(startIndex, i - 1);
 
-					if (charCode === Ascii.CloseBracket) {
+					if (byte === Ascii.CloseBracket) {
 						this.state = State.CDataEnding;
 					}
 
@@ -542,64 +623,64 @@ export class Parser {
 
 				// ONLY FOR XML
 				case State.CDataEnding: {
-					if (charCode === Ascii.CloseBracket) {
+					if (byte === Ascii.CloseBracket) {
 						this.state = State.CDataEnding2;
 						continue;
 					}
 
-					this.cdata += `]${char}`;
+					this.cdata.push(Ascii.CloseBracket, byte);
 					this.state = State.CData;
 					continue;
 				}
 
 				// ONLY FOR XML
 				case State.CDataEnding2: {
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						if (this.cdata) {
 							this.emitNode("onCdata", this.cdata);
 						}
 
-						this.cdata = "";
+						this.cdata.length = 0;
 						this.state = State.Text;
 						continue;
 					}
 
-					if (charCode === Ascii.CloseBracket) {
-						this.cdata += "]";
+					if (byte === Ascii.CloseBracket) {
+						this.cdata.push(Ascii.CloseBracket);
 						continue;
 					}
 
-					this.cdata += `]]${char}`;
+					this.cdata.push(Ascii.CloseBracket, Ascii.CloseBracket, byte);
 					this.state = State.CData;
 					continue;
 				}
 
 				case State.CloseTag: {
 					if (!this.tag.name) {
-						if (isWhitespace(charCode)) {
+						if (isWhitespace(byte)) {
 							continue;
 						}
 
-						if (!isNameStartChar(codePoint)) {
+						if (!isNameStartCharacter(codePoint)) {
 							this.fail("Invalid closing tag name.");
 							continue;
 						}
 
-						this.tag.name = char;
+						this.tag.name.push(byte);
 						continue;
 					}
 
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.processCloseTag();
 						continue;
 					}
 
-					if (isNameChar(codePoint)) {
-						this.tag.name += char;
+					if (isNameCharacter(codePoint)) {
+						this.tag.name.push(byte);
 						continue;
 					}
 
-					if (!isWhitespace(charCode)) {
+					if (!isWhitespace(byte)) {
 						this.fail("Invalid tag name in closing tag");
 						continue;
 					}
@@ -608,18 +689,19 @@ export class Parser {
 					continue;
 				}
 
-				case State.CloseTagSawWhitespace:
-					if (isWhitespace(charCode)) {
+				case State.CloseTagSawWhitespace: {
+					if (isWhitespace(byte)) {
 						continue;
 					}
 
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.processCloseTag();
 						continue;
 					}
 
 					this.fail("Invalid characters in closing tag");
 					continue;
+				}
 
 				/**
 				 * @example HTML / XML
@@ -628,16 +710,16 @@ export class Parser {
 				 * ```
 				 */
 				case State.Comment: {
-					this.comment += char;
+					this.comment.value.push(char);
 
-					if (this.comment.endsWith("-->")) {
+					if (this.comment.value.endsWith("-->")) {
 						const comment = this.comment.slice(0, -3);
 
 						if (comment) {
-							this.emitNode("onComment", comment);
+							this.emitNode("onComment", { value: comment });
 						}
 
-						this.comment = "";
+						this.comment.length = 0;
 
 						// ONLY FOR HTML/XML
 						if (this.doctype && this.hasDoctype !== true) {
@@ -654,22 +736,22 @@ export class Parser {
 
 				// ONLY FOR HTML/XML
 				case State.Doctype: {
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.state = State.Text;
 						this.emitNode("onDoctype", this.doctype);
 						this.hasDoctype = true; // remember we saw one
 						continue;
 					}
 
-					this.doctype += char;
+					this.doctype.push(byte);
 
-					if (charCode === Ascii.OpenBracket) {
+					if (byte === Ascii.OpenBracket) {
 						this.state = State.DoctypeDtd;
 						continue;
 					}
 
-					if (isQuote(charCode)) {
-						this.quote = charCode;
+					if (isQuote(byte)) {
+						this.quote = byte;
 						this.state = State.DoctypeQuoted;
 						continue;
 					}
@@ -679,33 +761,33 @@ export class Parser {
 
 				// ONLY FOR HTML/XML
 				case State.DoctypeDtd: {
-					if (charCode === Ascii.CloseBracket) {
-						this.doctype += char;
+					if (byte === Ascii.CloseBracket) {
+						this.doctype.push(byte);
 						this.state = State.Doctype;
 						continue;
 					}
 
-					if (charCode === Ascii.OpenAngle) {
+					if (byte === Ascii.OpenAngle) {
 						this.state = State.OpenWaka;
 						this.startTagPosition = this.position;
 						continue;
 					}
 
-					if (isQuote(charCode)) {
-						this.doctype += char;
-						this.quote = charCode;
+					if (isQuote(byte)) {
+						this.doctype.push(byte);
+						this.quote = byte;
 						this.state = State.DoctypeDtdQuoted;
 						continue;
 					}
 
-					this.doctype += char;
+					this.doctype.push(byte);
 					continue;
 				}
 
 				case State.DoctypeDtdQuoted: {
-					this.doctype += char;
+					this.doctype.push(byte);
 
-					if (charCode === this.quote) {
+					if (byte === this.quote) {
 						this.state = State.DoctypeDtd;
 						this.quote = 0;
 					}
@@ -714,9 +796,9 @@ export class Parser {
 				}
 
 				case State.DoctypeQuoted: {
-					this.doctype += char;
+					this.doctype.push(byte);
 
-					if (charCode === this.quote) {
+					if (byte === this.quote) {
 						this.quote = 0;
 						this.state = State.Doctype;
 					}
@@ -746,13 +828,13 @@ export class Parser {
 				 * ```
 				 */
 				case State.JsxAttributeExpression: {
-					this.attribute.value += char;
+					this.attribute.value.push(byte);
 
-					if (charCode === Ascii.OpenBrace) {
+					if (byte === Ascii.OpenBrace) {
 						this.braceDepth += 1;
 					}
 
-					if (charCode === Ascii.CloseBrace) {
+					if (byte === Ascii.CloseBrace) {
 						this.braceDepth -= 1;
 
 						if (this.braceDepth === 0) {
@@ -767,22 +849,22 @@ export class Parser {
 				}
 
 				case State.OpenTag: {
-					if (isNameChar(codePoint)) {
-						this.tag.name += char;
+					if (isNameCharacter(codePoint)) {
+						this.tag.name.push(byte);
 						continue;
 					}
 
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.processOpenTag();
 						continue;
 					}
 
-					if (charCode === Ascii.ForwardSlash) {
+					if (byte === Ascii.ForwardSlash) {
 						this.state = State.OpenTagSlash;
 						continue;
 					}
 
-					if (!isWhitespace(charCode)) {
+					if (!isWhitespace(byte)) {
 						this.fail("Invalid character in tag name");
 					}
 
@@ -796,7 +878,7 @@ export class Parser {
 					// - Void elements: <br />, <img />, <input />      (HTML)
 					// - XML empty elements: <tag/>                     (XML)
 					// - JSX components without children: <Component /> (JSX)
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.processOpenTag(true);
 						this.processCloseTag();
 						continue;
@@ -808,7 +890,7 @@ export class Parser {
 				}
 
 				case State.OpenWaka: {
-					if (isWhitespace(charCode)) {
+					if (isWhitespace(byte)) {
 						continue;
 					}
 
@@ -817,9 +899,9 @@ export class Parser {
 					// - Comment (HTML/XML): <!-- ... -->
 					// - CDATA (XML): <![CDATA[ ... ]]>
 					// - DOCTYPE (HTML/XML): <!DOCTYPE ...>
-					if (charCode === Ascii.ExclamationMark) {
+					if (byte === Ascii.ExclamationMark) {
 						this.state = State.MarkupDeclaration;
-						this.markupDeclaration = "";
+						this.markupDeclaration.length = 0;
 						continue;
 					}
 
@@ -829,9 +911,10 @@ export class Parser {
 					//   <>
 					//     <Nav />
 					//   </>
-					if (charCode === Ascii.CloseAngle) {
-						if (this.options.mode !== Mode.Jsx) {
+					if (byte === Ascii.CloseAngle) {
+						if (this.options.mode !== "jsx") {
 							this.fail("Fragments are only allowed in JSX mode");
+							continue;
 						}
 
 						this.newTag("");
@@ -845,16 +928,16 @@ export class Parser {
 					//   </div>       (HTML, JSX, XML)
 					//   </Component> (JSX - custom component)
 					//   </>          (JSX - fragment)
-					if (charCode === Ascii.ForwardSlash) {
-						this.newTag("", true);
+					if (byte === Ascii.ForwardSlash) {
+						this.newTag(true);
 						continue;
 					}
 
 					// `<?` -> Processing instruction (XML)
 					// Example:
 					//   <?xml version="1.0"?>
-					if (charCode === Ascii.QuestionMark) {
-						if (this.options.mode !== Mode.Xml) {
+					if (byte === Ascii.QuestionMark) {
+						if (this.options.mode !== "xml") {
 							this.fail("Processing instructions are only allowed in XML mode");
 							continue;
 						}
@@ -864,7 +947,7 @@ export class Parser {
 						continue;
 					}
 
-					if (isNameStartChar(codePoint)) {
+					if (isNameStartCharacter(codePoint)) {
 						this.newTag(char);
 						continue;
 					}
@@ -882,42 +965,42 @@ export class Parser {
 						this.textNode += " ".repeat(pad);
 					}
 
-					this.textNode += `<${char}`;
+					this.textNode.value.push(Ascii.OpenAngle, byte);
 					this.state = State.Text;
 					continue;
 				}
 
 				case State.ProcessingInstruction: {
-					if (charCode === Ascii.QuestionMark) {
+					if (byte === Ascii.QuestionMark) {
 						this.state = State.ProcessingInstructionEnding;
 						continue;
 					}
 
-					if (isWhitespace(charCode)) {
+					if (isWhitespace(byte)) {
 						this.state = State.ProcessingInstructionData;
 						continue;
 					}
 
-					this.pi.target += char;
+					this.pi.target.push(byte);
 					continue;
 				}
 
 				case State.ProcessingInstructionData: {
-					if (!this.pi.data && isWhitespace(charCode)) {
+					if (!this.pi.data && isWhitespace(byte)) {
 						continue;
 					}
 
-					if (charCode === Ascii.QuestionMark) {
+					if (byte === Ascii.QuestionMark) {
 						this.state = State.ProcessingInstructionEnding;
 						continue;
 					}
 
-					this.pi.data += char;
+					this.pi.data.push(byte);
 					continue;
 				}
 
 				case State.ProcessingInstructionEnding: {
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.emitNode("onProcessingInstruction", {
 							target: this.pi.target,
 							data: this.pi.data,
@@ -927,19 +1010,19 @@ export class Parser {
 						continue;
 					}
 
-					this.pi.data += `?${char}`;
+					this.pi.data.push(Ascii.QuestionMark, byte);
 					this.state = State.ProcessingInstructionData;
 					continue;
 				}
 
 				case State.MarkupDeclaration: {
-					const sequence = this.markupDeclaration + char;
+					const sequence = this.markupDeclaration.push(byte);
 					const upperSequence = sequence.toUpperCase();
 
 					if (sequence === "--") {
 						this.state = State.Comment;
-						this.comment = "";
-						this.markupDeclaration = "";
+						this.comment.length = 0;
+						this.markupDeclaration.length = 0;
 						continue;
 					}
 
@@ -950,18 +1033,19 @@ export class Parser {
 					) {
 						this.state = State.DoctypeDtd;
 						this.doctype += `<!${this.markupDeclaration}${char}`;
-						this.markupDeclaration = "";
+						this.markupDeclaration.length = 0;
 						continue;
 					}
 
 					if (upperSequence === "[CDATA[") {
-						if (this.options.mode !== Mode.Xml) {
+						if (this.options.mode !== "xml") {
 							this.fail("CDATA sections are only allowed in XML.");
+							continue;
 						}
 
 						this.state = State.CData;
-						this.markupDeclaration = "";
-						this.cdata = "";
+						this.markupDeclaration.length = 0;
+						this.cdata.length = 0;
 						continue;
 					}
 
@@ -972,36 +1056,36 @@ export class Parser {
 							this.fail("Inappropriately located doctype declaration");
 						}
 
-						this.doctype = "";
-						this.markupDeclaration = "";
+						this.doctype.length = 0;
+						this.markupDeclaration.length = 0;
 						continue;
 					}
 
-					if (charCode === Ascii.CloseAngle) {
+					if (byte === Ascii.CloseAngle) {
 						this.emitNode("onMarkupDeclaration", this.markupDeclaration);
-						this.markupDeclaration = "";
+						this.markupDeclaration.length = 0;
 						this.state = State.Text;
 						continue;
 					}
 
-					if (isQuote(charCode)) {
-						this.quote = charCode;
-						this.markupDeclaration += char;
+					if (isQuote(byte)) {
+						this.quote = byte;
+						this.markupDeclaration.push(byte);
 						this.state = State.MarkupDeclarationQuoted;
 						continue;
 					}
 
-					this.markupDeclaration += char;
+					this.markupDeclaration.push(byte);
 					continue;
 				}
 
 				case State.MarkupDeclarationQuoted: {
-					if (charCode === this.quote) {
+					if (byte === this.quote) {
 						this.state = State.MarkupDeclaration;
 						this.quote = 0;
 					}
 
-					this.markupDeclaration += char;
+					this.markupDeclaration.push(byte);
 					continue;
 				}
 
@@ -1009,7 +1093,7 @@ export class Parser {
 				case State.AttributeValueEntityUnquoted:
 				case State.TextEntity: {
 					let returnState: State;
-					let buffer: (typeof BUFFERS)[number];
+					let buffer: "attributeValue" | "textNode";
 
 					switch (this.state) {
 						case State.TextEntity: {
@@ -1040,21 +1124,20 @@ export class Parser {
 
 					// If we have already started building an entity name
 					if (this.entity.length) {
-						if (charCode === Ascii.Number || isNameChar(codePoint)) {
-							this.entity += char;
+						if (byte === Ascii.Number || isNameCharacter(codePoint)) {
+							this.entity.push(byte);
 							continue; // Move to next input character
 						}
 					} else {
-						if (charCode === Ascii.Number || isNameStartChar(codePoint)) {
-							this.entity += char;
+						if (byte === Ascii.Number || isNameStartCharacter(codePoint)) {
+							this.entity.push(byte);
 							continue; // Move to next input character
 						}
 					}
 
 					this.fail("Invalid character in entity name");
-
-					this[buffer] += `&${this.entity}${char}`;
-					this.entity = "";
+					this[buffer].push(`&${this.entity}${char}`);
+					this.entity.length = 0;
 					this.state = returnState;
 					continue;
 				}
@@ -1075,10 +1158,10 @@ export class Parser {
 	 *
 	 * @param char The current character being evaluated.
 	 */
-	private beginWhitespace(charCode: number): void {
+	private beginWhitespace(byte: number): void {
 		// Scenario 1: We found the opening bracket! The document officially begins here.
 		// Shift state to start parsing the tag and mark our starting position.
-		if (charCode === Ascii.OpenAngle) {
+		if (byte === Ascii.OpenAngle) {
 			this.state = State.OpenWaka;
 			this.startTagPosition = this.position;
 			return;
@@ -1087,56 +1170,55 @@ export class Parser {
 		// Scenario 2: We found a normal character (like a letter) before any tags.
 		// This is invalid document structure. We emit an error to notify the user,
 		// but gracefully recover by buffering it into a text node so the parser doesn't crash.
-		if (!isWhitespace(charCode)) {
+		if (!isWhitespace(byte)) {
 			this.fail("Non-whitespace before first tag.");
-			this.textNode = this.char;
+			this.textNode.value.push(byte);
 			this.state = State.Text;
 		}
 	}
 
 	private checkBufferLength(): void {
-		const threshold = Math.max(MAX_BUFFER_LENGTH, 10);
-		let maxActual = 0;
+		const maxBufferLength = Math.max(MAX_BUFFER_LENGTH, 10);
+		let longestBufferLength = 0;
 
-		for (const buffer of BUFFERS) {
-			const len = this[buffer].length;
-
-			if (len > threshold) {
-				switch (buffer) {
-					case "textNode": {
-						this.flushText();
-						break;
-					}
-
-					case "cdata": {
-						this.emitNode("onCdata", this.cdata);
-						this.cdata = "";
-						break;
-					}
-
-					case "script": {
-						this.emitNode("onScript", this.script);
-						this.script = "";
-						break;
-					}
-
-					default: {
-						this.fail(`Max buffer length exceeded: ${buffer}`);
-					}
-				}
-			}
-
-			maxActual = Math.max(maxActual, len);
+		if (this.textNode.length > maxBufferLength) {
+			this.flushText();
 		}
 
-		this.bufferCheckPosition = MAX_BUFFER_LENGTH - maxActual + this.position;
+		if (this.cdata.length > maxBufferLength) {
+			this.emitNode("onCdata", this.cdata);
+			this.cdata.length = 0;
+		}
+
+		if (this.script.length > maxBufferLength) {
+			this.emitNode("onScript", this.script);
+			this.script.length = 0;
+		}
+
+		longestBufferLength = Math.max(
+			this.textNode.length,
+			this.cdata.length,
+			this.script.length,
+			this.comment.length,
+			this.doctype.length,
+			this.entity.length,
+			this.markupDeclaration.length,
+			this.tagName.length,
+			this.attributeName.length,
+			this.attributeValue.length,
+			this.piTarget.length,
+			this.piData.length,
+		);
+
+		this.bufferCheckPosition =
+			MAX_BUFFER_LENGTH - longestBufferLength + this.position;
 	}
 
 	private parseEntity(): string {
 		const entity = this.entity;
 		let lowerCaseEntity = entity.toLowerCase();
-		let number = NaN;
-		let numStr = "";
+		let number = Number.NaN;
+		let numberString = "";
 
 		// -- Handles named entities
 
@@ -1154,11 +1236,11 @@ export class Parser {
 			if (lowerCaseEntity.charCodeAt(1) === 0x78) {
 				lowerCaseEntity = lowerCaseEntity.slice(2);
 				number = Number.parseInt(lowerCaseEntity, 16);
-				numStr = number.toString(16);
+				numberString = number.toString(16);
 			} else {
 				lowerCaseEntity = lowerCaseEntity.slice(1);
 				number = Number.parseInt(lowerCaseEntity, 10);
-				numStr = number.toString(10);
+				numberString = number.toString(10);
 			}
 		}
 
@@ -1175,7 +1257,7 @@ export class Parser {
 
 		if (
 			Number.isNaN(number) ||
-			numStr.toLowerCase() !== lowerCaseEntity ||
+			numberString.toLowerCase() !== lowerCaseEntity ||
 			number < 0 ||
 			number > 0x10ffff
 		) {
@@ -1188,48 +1270,44 @@ export class Parser {
 
 	private flushText(): void {
 		if (this.textNode) {
-			this.emit("onText", this.textNode);
+			this.emit("onText", { value: this.textNode.value });
 		}
 
-		this.textNode = "";
+		this.textNode.length = 0;
 	}
 
 	private emit<T extends keyof SAXHandlers>(
 		event: T,
-		...args: Parameters<NonNullable<SAXHandlers[T]>>
+		...data: Parameters<NonNullable<SAXHandlers[T]>>
 	): void {
-		const handler = this.handlers[event];
-
-		if (!handler) {
-			return;
-		}
-
-		handler(...args);
+		this.handlers[event]?.(...data);
 	}
 
 	private emitNode<T extends keyof SAXHandlers>(
 		event: T,
-		...args: Parameters<NonNullable<SAXHandlers[T]>>
+		...data: Parameters<NonNullable<SAXHandlers[T]>>
 	): void {
-		if (this.textNode) {
+		if (this.textNode.length > 0) {
 			this.flushText();
 		}
 
-		this.emit(event, ...args);
+		this.emit(event, ...data);
 	}
 
 	private fail(message: string): void {
 		this.flushText();
+
 		if (this.options.trackPosition) {
 			message += `\nLine: ${this.line}\nColumn: ${this.column}\nChar: ${this.char}`;
 		}
-		const err = new Error(message);
-		this.error = err;
-		this.emit("onError", err);
+
+		const error = new Error(message);
+		this.error = error;
+		this.emit("onError", error);
 	}
 
 	private processAttribute(): void {
-		if (this.options.mode === Mode.Html) {
+		if (this.options.mode === "html") {
 			this.attribute.name = this.applyCaseTransform(this.attribute.name);
 		}
 
@@ -1250,16 +1328,19 @@ export class Parser {
 
 			if (prefix === "xmlns") {
 				// namespace binding attribute. push the binding into scope
-				if (localName === "xml" && this.attribute.value !== NAMESPACES.xml) {
+				if (
+					localName === "xml" &&
+					this.attribute.value !== XML_PREDEFINED_NAMESPACES.xml
+				) {
 					this.fail(
-						`xml: prefix must be bound to ${NAMESPACES.xml}\nActual: ${this.attribute.value}`,
+						`xml: prefix must be bound to ${XML_PREDEFINED_NAMESPACES.xml}\nActual: ${this.attribute.value}`,
 					);
 				} else if (
 					localName === "xmlns" &&
-					this.attribute.value !== NAMESPACES.xmlns
+					this.attribute.value !== XML_PREDEFINED_NAMESPACES.xmlns
 				) {
 					this.fail(
-						`xmlns: prefix must be bound to ${NAMESPACES.xmlns}\nActual: ${this.attribute.value}`,
+						`xmlns: prefix must be bound to ${XML_PREDEFINED_NAMESPACES.xmlns}\nActual: ${this.attribute.value}`,
 					);
 				} else {
 					const parentNs = this.namespaceStack[this.namespaceStack.length - 1];
@@ -1300,21 +1381,25 @@ export class Parser {
 	private processCloseTag(): void {
 		if (!this.tag.name) {
 			this.fail("Weird empty close tag.");
-			this.textNode += "</>";
+			this.textNode.value.push(
+				Ascii.OpenAngle,
+				Ascii.ForwardSlash,
+				Ascii.CloseAngle,
+			);
 			this.state = State.Text;
 			return;
 		}
 
-		if (this.script) {
+		if (this.script.length > 0) {
 			if (this.tag.name !== "script") {
 				this.script += `</${this.tag.name}>`;
-				this.tag.name = "";
+				this.tag.name.length = 0;
 				this.state = State.Script;
 				return;
 			}
 
 			this.emitNode("onScript", this.script);
-			this.script = "";
+			this.script.length = 0;
 		}
 
 		// first make sure that the closing tag actually exists.
@@ -1322,12 +1407,11 @@ export class Parser {
 
 		let targetTagName = this.tag.name;
 
-		if (this.options.mode === Mode.Html) {
+		if (this.options.mode === "html") {
 			targetTagName = this.applyCaseTransform(targetTagName);
 		}
 
 		let index = this.tagStack.length;
-
 		while (index--) {
 			if (this.tagStack[index].name !== targetTagName) {
 				this.fail("Unexpected close tag");
@@ -1338,20 +1422,24 @@ export class Parser {
 
 		if (index < 0) {
 			this.fail(`Unmatched closing tag: ${this.tag.name}`);
-			this.textNode += `</${this.tag.name}>`;
+			this.textNode.value.push(
+				Ascii.OpenAngle,
+				Ascii.ForwardSlash,
+				this.tag.name,
+				Ascii.CloseAngle,
+			);
 			this.state = State.Text;
 			return;
 		}
 
 		while (this.tagStack.length > index) {
 			const tag = this.tagStack.pop()!;
-			this.tag = tag;
 
 			if (this.options.namespaces) {
 				this.namespaceStack.pop();
 			}
 
-			this.emitNode("onCloseTag", tag.name);
+			this.emitNode("onCloseTag", tag);
 		}
 
 		this.resetAttribute();
@@ -1362,44 +1450,42 @@ export class Parser {
 	private processOpenTag(selfClosing = false): void {
 		if (this.options.namespaces) {
 			const tag = this.tag;
-			const qName = parseQualifiedName(this.tag.name, false);
+			const qualifiedName = parseQualifiedName(this.tag.name, false);
 
-			tag.prefix = qName.prefix;
-			tag.localName = qName.localName;
-			tag.uri = tag.ns[qName.prefix] ?? "";
+			tag.prefix = qualifiedName.prefix;
+			tag.localName = qualifiedName.localName;
+			tag.uri = tag.ns[qualifiedName.prefix] ?? "";
 
 			if (tag.prefix && !tag.uri) {
 				this.fail(`Unbound namespace prefix: ${JSON.stringify(this.tag.name)}`);
-				tag.uri = qName.prefix;
+				tag.uri = qualifiedName.prefix;
 			}
 
-			// handle deferred onAttribute events
-			// Note: do not apply default ns to attributes:
-			// http://www.w3.org/TR/REC-xml-names/#defaulting
 			for (const { name, value, valueType } of this.attributeList) {
-				const qName = parseQualifiedName(name);
-				const prefix = qName.prefix;
+				const qualifiedName = parseQualifiedName(name, true);
 
 				let uri = "";
 
-				if (prefix !== "") {
-					uri = tag.ns[prefix] ?? "";
+				if (qualifiedName.prefix !== "") {
+					uri = tag.ns[qualifiedName.prefix] ?? "";
 				}
 
 				const attribute: Attribute = {
 					name,
 					value,
 					valueType,
-					prefix,
-					localName: qName.localName,
+					prefix: qualifiedName.prefix,
+					localName: qualifiedName.localName,
 					uri,
 				};
 
 				// if there's any attributes with an undefined namespace,
 				// then fail on them now.
-				if (prefix && prefix !== "xmlns" && !uri) {
-					this.fail(`Unbound namespace prefix: ${JSON.stringify(prefix)}`);
-					attribute.uri = prefix;
+				if (qualifiedName.prefix && qualifiedName.prefix !== "xmlns" && !uri) {
+					this.fail(
+						`Unbound namespace prefix: ${JSON.stringify(qualifiedName.prefix)}`,
+					);
+					attribute.uri = qualifiedName.prefix;
 				}
 
 				this.tag.attributes[name] = attribute;
@@ -1407,15 +1493,27 @@ export class Parser {
 			}
 
 			this.attributeList.length = 0;
+			this.namespaceStack.push(tag.ns);
 		}
 
-		this.tag.isSelfClosing = selfClosing;
+		this.tag.selfClosing = selfClosing;
 		this.sawRoot = true;
 		this.tagStack.push(this.tag);
 		this.emitNode("onOpenTag", this.tag);
 
 		// Not self-closing (false): e.g., <div id="app">. This means the tag has "inside" content (children or text) that we need to parse next.
 		// Self-closing (true): e.g., <img src="cat.jpg" />. This tag is immediately done; there is no "inside" content.
+
+		if (!selfClosing) {
+			if (
+				this.options.mode === "html" &&
+				this.tag.name.toLowerCase() === "script"
+			) {
+				this.state = State.Script;
+			} else {
+				this.state = State.Text;
+			}
+		}
 
 		this.resetAttribute();
 		this.attributeList.length = 0;
@@ -1430,7 +1528,7 @@ export class Parser {
 	 * - Clears any previous attribute value buffer
 	 * - Defaults the value type to `NoValue` (boolean attribute)
 	 *
-	 * @param char - The first character of the attribute name (must satisfy `isNameStartChar`).
+	 * @param char - The first character of the attribute name (must satisfy `isNameStartCharacter`).
 	 *
 	 * @example
 	 * ``` js
@@ -1449,9 +1547,9 @@ export class Parser {
 	 * newAttribute("c");
 	 * ```
 	 */
-	private newAttribute(char: string): void {
+	private newAttribute(byte: number): void {
 		this.attribute = {
-			name: char,
+			name: byte,
 			value: "",
 			valueType: AttributeValueSyntax.Boolean,
 		};
@@ -1467,7 +1565,7 @@ export class Parser {
 		this.tag = {
 			name: char,
 			attributes: {},
-			isSelfClosing: false,
+			selfClosing: false,
 			...(this.options.namespaces ? { ns: currentNs } : {}),
 		};
 
@@ -1479,25 +1577,21 @@ export class Parser {
 	}
 
 	private resetAttribute(): void {
-		this.attribute = {
-			name: "",
-			value: "",
-			valueType: AttributeValueSyntax.Boolean,
-		};
+		this.attribute.name.length = 0;
+		this.attribute.value.length = 0;
+		this.attribute.valueType = AttributeValueSyntax.Boolean;
 	}
 
 	private resetProcessingInstruction(): void {
-		this.pi = {
-			target: "",
-			data: undefined,
-		};
+		this.pi.target.length = 0;
+		this.pi.data.length = 0;
 	}
 
 	private resetTag(): void {
 		this.tag = {
 			name: "",
 			attributes: {},
-			isSelfClosing: false,
+			selfClosing: false,
 		};
 	}
 
@@ -1520,32 +1614,28 @@ export class Parser {
 
 		// Reset namespaces if enabled
 		if (this.options.namespaces) {
-			this.namespaceStack = [Object.create(NAMESPACES)];
+			this.namespaceStack = [Object.create(XML_PREDEFINED_NAMESPACES)];
 		}
 
 		this.resetAttribute();
 		this.resetProcessingInstruction();
 		this.resetTag();
 
-		this.cdata = "";
+		this.cdata.length = 0;
 		this.char = "";
-		this.comment = "";
-		this.doctype = "";
+		this.comment.value = "";
+		this.doctype.length = 0;
 		this.entity = "";
 		this.quote = 0;
 		this.markupDeclaration = "";
 		this.script = "";
-		this.textNode = "";
+		this.textNode.value = "";
 	}
 
-	private updatePosition(charCode: number): void {
-		if (!this.options.trackPosition) {
-			return;
-		}
-
+	private updatePosition(byte: number): void {
 		this.position += 1;
 
-		if (charCode === Ascii.LineFeed) {
+		if (byte === Ascii.LineFeed) {
 			this.line += 1;
 			this.column = 0;
 			return;

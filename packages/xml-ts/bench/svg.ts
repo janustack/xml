@@ -1,17 +1,12 @@
-import { type SAXOptions, SAXParser } from "@janustack/sax";
+import { type SAXOptions, SAXParser } from "@janustack/xml";
 import { bench, group, run } from "mitata";
 import IsaacsSAX from "sax";
 
 const janustackOptions: SAXOptions = {
 	namespaces: true,
-	trackPosition: false,
 } as const;
 
 const isaacsOptions = {
-	normalize: false,
-	position: false,
-	strict: false,
-	trim: false,
 	xmlns: true,
 } as const;
 
@@ -32,7 +27,7 @@ group("XML Parser Comparison (streaming)", () => {
 	});
 
 	bench("Isaacs SAX", async () => {
-		const parser = IsaacsSAX.parser(isaacsOptions.strict, isaacsOptions);
+		const parser = IsaacsSAX.parser(true, isaacsOptions);
 		const stream = Bun.file(url).stream();
 		for await (const chunk of stream) {
 			parser.write(decoder.decode(chunk, { stream: true }));
@@ -49,7 +44,7 @@ group("XML Parser Comparison (text)", () => {
 	});
 
 	bench("Isaacs SAX", () => {
-		const parser = IsaacsSAX.parser(isaacsOptions.strict, isaacsOptions);
+		const parser = IsaacsSAX.parser(true, isaacsOptions);
 		parser.write(text);
 		parser.close();
 	});

@@ -1,4 +1,4 @@
-import { SAXParser } from "@janustack/sax";
+import { SAXParser } from "@janustack/xml";
 import { handlers, options } from "./shared.ts";
 
 const path = "../../assets/svg/index.svg";

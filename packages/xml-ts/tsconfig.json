@@ -1,15 +1,9 @@
 {
 	"compilerOptions": {
 		"paths": {
-			":*": ["./src/*"],
-			"@janustack/xml-utils": ["../utils/src/main.ts"]
+			":*": ["./src/*"]
 		}
 	},
 	"extends": "../../tsconfig.base.json",
-	"include": ["examples/**/*", "src/**/*", "tests/**/*"],
-	"references": [
-		{
-			"path": "../utils"
-		}
-	]
+	"include": ["examples/**/*", "src/**/*", "tests/**/*"]
 }

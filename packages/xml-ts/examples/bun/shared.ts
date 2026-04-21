@@ -1,8 +1,7 @@
-import type { SAXHandlers, SAXOptions } from "@janustack/sax";
+import type { SAXHandlers, SAXOptions } from "@janustack/xml";
 
 export const options: SAXOptions = {
 	namespaces: true,
-	trackPosition: true,
 } as const;
 
 export const handlers: SAXHandlers = {
@@ -14,33 +13,17 @@ export const handlers: SAXHandlers = {
 	onCdata(cdata) {
 		Bun.stdout.write(`Cdata: ${cdata}\n`);
 	},
-	onCloseTag(name) {
-		Bun.stdout.write(`Close Tag: ${name}\n`);
+	onCloseTag(tag) {
+		Bun.stdout.write(`Close Tag: ${Bun.inspect(tag, { colors: true })}\n`);
 	},
 	onComment(comment) {
-		/**
-		 * Unlike sax-js, Janustack SAX does not provide normalize/trim as parser options.
-		 * Whitespace processing is the caller's responsibility.
-		 *
-		 * @example
-		 * ```html
-		 * <!--   hello   world   -->
-		 * ```
-		 *
-		 * ```ts
-		 * comment
-		 *  .replace(/\s+/g, " ") → " hello world "
-		 *  .trim()               → "hello world"
-		 * ```
-		 */
-		const normalized = comment.replace(/\s+/g, " ").trim();
-
-		if (normalized) {
-			Bun.stdout.write(`Comment: ${normalized}\n`);
-		}
+		Bun.stdout.write(`Comment: ${Bun.inspect(comment, { colors: true })}\n`);
+	},
+	onDoctype(doctype) {
+		Bun.stdout.write(`Doctype: ${doctype}\n`);
 	},
 	onError(error) {
-		console.error(`Error: ${error.message}\n`);
+		Bun.stderr.write(`Error: ${error.message}\n`);
 	},
 	onOpenTag(tag) {
 		Bun.stdout.write(`Open Tag: ${Bun.inspect(tag, { colors: true })}\n`);
@@ -51,10 +34,6 @@ export const handlers: SAXHandlers = {
 		);
 	},
 	onText(text) {
-		const normalized = text.replace(/\s+/g, " ").trim();
-
-		if (normalized) {
-			Bun.stdout.write(`Text: ${normalized}\n`);
-		}
+		Bun.stdout.write(`Text: ${Bun.inspect(text, { colors: true })}\n`);
 	},
 };

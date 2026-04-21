@@ -1,46 +1,51 @@
-import SAX from "sax";
+import { SAXParser } from "modded-sax";
 
 const options = {
-	lowercase: false,
-	normalize: false,
-	position: false,
 	strict: true,
-	trim: false,
 	xmlns: true,
 } as const;
 
-const parser = SAX.parser(options.strict, options);
+const parser = new SAXParser(options.strict, options);
 
-parser.onattribute = (attribute) => {
+parser.onAttribute = (attribute) => {
 	console.log("Attribute:", attribute);
 };
-parser.oncdata = (cdata) => {
+
+parser.onCdata = (cdata) => {
 	console.log("Cdata:", cdata);
 };
-parser.onclosetag = (name) => {
+
+parser.onCloseTtag = (name) => {
 	console.log("Close Tag:", name);
 };
-parser.oncomment = (comment) => {
+
+parser.onComment = (comment) => {
 	console.log("Comment:", comment);
 };
-parser.onerror = (error) => {
+
+parser.onError = (error) => {
 	console.error("Error:", error);
 };
-parser.onopentag = (tag) => {
+
+parser.onOpenTag = (tag) => {
 	console.log("Open Tag:", tag);
 };
-parser.onprocessinginstruction = (data) => {
-	console.log("Processing Instruction:", data);
+
+parser.onProcessingInstruction = (pi) => {
+	console.log("Processing Instruction:", pi);
 };
-parser.ontext = (text) => {
-	if (text.trim()) {
+
+parser.onText = (text) => {
+	const normalized = text.replace(/\s+/g, " ").trim();
+
+	if (normalized) {
 		console.log("Text:", text);
 	}
 };
 
 const decoder = new TextDecoder();
 
-const path = "../../assets/xml/test.xml";
+const path = "../../../assets/xml/test.xml";
 const url = new URL(path, import.meta.url);
 const stream = Bun.file(url).stream();
 

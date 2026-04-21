@@ -1,5 +1,11 @@
-import { SAXParser } from "@janustack/sax";
-import { handlers, options } from "./shared.ts";
+import { type SAXOptions, SAXParser } from "@janustack/xml";
+import { handlers } from "./shared.ts";
+
+const options: SAXOptions = {
+	mode: "xml",
+	namespaces: false,
+	trackPosition: true,
+} as const;
 
 const path = "../../assets/xml/test.xml";
 const url = new URL(path, import.meta.url);

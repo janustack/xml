@@ -1,7 +1,12 @@
-import { SAXParser } from "@janustack/sax";
-import { handlers, options } from "./shared.ts";
+import { type SAXOptions, SAXParser } from "@janustack/xml";
+import { handlers } from "./shared.ts";
 
-const path = "../../assets/xml/test.xml";
+const options: SAXOptions = {
+	mode: "xml",
+	namespaces: true,
+} as const;
+
+const path = "../../assets/xml/1mb.xml";
 const url = new URL(path, import.meta.url);
 const stream = Bun.file(url).stream();
 

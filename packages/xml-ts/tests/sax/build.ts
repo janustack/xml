@@ -1,14 +1,11 @@
-import { dts } from "bun-plugin-dtsx";
-
 await Bun.$`rm -rf dist`;
 
 const result = await Bun.build({
-	entrypoints: ["src/main.ts"],
+	entrypoints: ["src/main.js"],
 	metafile: "meta.json",
-	plugins: [dts()],
 	target: "browser",
 	footer: "// Built with red eyes by ACY in Florida",
-	minify: false,
+	minify: true,
 	outdir: "dist",
 });
 

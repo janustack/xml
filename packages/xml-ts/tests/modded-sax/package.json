@@ -1,0 +1,16 @@
+{
+	"devDependencies": {
+		"bun-plugin-dtsx": "^0.9.13"
+	},
+	"exports": {
+		".": {
+			"import": "./dist/main.js",
+			"types": "./dist/main.d.ts"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"name": "modded-sax",
+	"type": "module"
+}

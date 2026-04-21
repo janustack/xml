@@ -8,17 +8,16 @@
 <root xmlns="urn:default"
       xmlns:x="urn:x"
       xmlns:y="urn:y">
+  <element>Hi, I'm Andrew.</element>
 
   <!-- Comment before content -->
 
   <child id="1" x:type="example">
     Text before CDATA
-
     <![CDATA[
       <not>parsed</not>
       & still raw
     ]]>
-
     Text after CDATA
   </child>
 
@@ -31,9 +30,8 @@
   </y:container>
 
   <rebind xmlns:x="urn:x2">
-    <x:item>Different namespace now</x:item>
+    <x:item>Different namespace now.</x:item>
   </rebind>
 
-  <empty/>
-
+  <empty />
 </root>
